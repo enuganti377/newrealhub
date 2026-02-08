@@ -4,11 +4,12 @@ const News = require("../models/News");
 
 
 const rssMap = {
-  general: "https://ntvtelugu.com/rss",
-  politics: "https://ntvtelugu.com/rss/politics",
-  sports: "https://ntvtelugu.com/rss/sports",
-  cinema: "https://ntvtelugu.com/rss/entertainment",
+  general: "https://ntvtelugu.com/feed",
+  politics: "https://ntvtelugu.com/category/politics/feed",
+  sports: "https://ntvtelugu.com/category/sports/feed",
+  cinema: "https://ntvtelugu.com/category/entertainment/feed",
 };
+
 
 
 function extractImageFromHTML(html) {

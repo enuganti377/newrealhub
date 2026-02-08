@@ -10,91 +10,190 @@ const rssMap = {
   cinema: "https://telugu.abplive.com/entertainment/feed",
 };
 
-function isBadImage(url) {
-  if (!url) return true;
-  const bad = ["logo", "icon", "sprite", "default"];
-  return bad.some(w => url.toLowerCase().includes(w));
+
+
+// Decode HTML entities
+function decodeHtml(text = "") {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&")
+    .replace(/&nbsp;/g, " ");
 }
 
-async function extractABPArticleImage(url) {
+
+
+// Clean + limit words
+function cleanText(html = "", maxWords = 350) {
+  let text = decodeHtml(html);
+
+  text = text.replace(/<[^>]*>/g, " ");
+  text = text.replace(/\s+/g, " ").trim();
+
+  const words = text.split(" ");
+  if (words.length > maxWords) {
+    text = words.slice(0, maxWords).join(" ");
+  }
+
+  return text;
+}
+
+
+
+// 🔥 Strong full article extractor
+async function extractFullArticle(url) {
   try {
     const { data } = await axios.get(url, {
-      timeout: 10000,
+      timeout: 12000,
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 Chrome/120",
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
       },
     });
 
     const $ = cheerio.load(data);
 
-    const ogImage = $('meta[property="og:image"]').attr("content");
-    if (ogImage && !isBadImage(ogImage)) return ogImage;
+    let text = "";
 
-    const articleImg =
-      $(".article-content img").first().attr("src") ||
-      $("article img").first().attr("src");
+    // Try multiple containers
+    const selectors = [
+      ".article-content p",
+      ".story-content p",
+      ".abp-story-article p",
+      "article p",
+      ".content p",
+      ".storyBody p",
+    ];
 
-    if (articleImg && !isBadImage(articleImg)) return articleImg;
+    for (const sel of selectors) {
+      $(sel).each((i, el) => {
+        const t = $(el).text().trim();
+        if (t.length > 40) {
+          text += t + " ";
+        }
+      });
+
+      if (text.length > 300) break;
+    }
+
+    return text.trim();
+
+  } catch {
+    return "";
+  }
+}
+
+
+
+// Detect bad images
+function isBadImage(url) {
+  if (!url) return true;
+  const bad = ["logo", "icon", "sprite", "default"];
+  return bad.some((w) => url.toLowerCase().includes(w));
+}
+
+
+
+// Extract image
+async function extractArticleImage(url) {
+  try {
+    const { data } = await axios.get(url);
+    const $ = cheerio.load(data);
+
+    const og = $('meta[property="og:image"]').attr("content");
+    if (og && !isBadImage(og)) return og;
 
     return null;
+
   } catch {
     return null;
   }
 }
 
+
+
+// MAIN FETCH
 async function fetchTeluguNews(category) {
   const rssUrl = rssMap[category];
   if (!rssUrl) return 0;
 
-  const response = await axios.get(rssUrl, { timeout: 15000 });
-  const parser = new xml2js.Parser({ explicitArray: false });
+  console.log("📡 Fetching ABP:", category);
+
+  const response = await axios.get(rssUrl);
+  const parser = new xml2js.Parser({
+    explicitArray: false,
+    tagNameProcessors: [xml2js.processors.stripPrefix],
+  });
+
   const data = await parser.parseStringPromise(response.data);
 
-  const items = data?.rss?.channel?.item?.slice(0, 5) || [];
+  const items = data?.rss?.channel?.item || [];
+  const list = Array.isArray(items)
+    ? items.slice(0, 10)
+    : [items];
+
   let count = 0;
 
-  for (const item of items) {
+  for (const item of list) {
     try {
-      let imageUrl = null;
+      if (!item.link) continue;
 
-      // 1️⃣ Try RSS image (rare)
-      if (item["media:content"]?.$?.url) {
-        imageUrl = item["media:content"].$.url;
-      } else if (item.enclosure?.$?.url) {
-        imageUrl = item.enclosure.$.url;
+      // IMAGE
+      let imageUrl =
+        item.enclosure?.$?.url ||
+        item["media:content"]?.$?.url;
+
+      if (!imageUrl || isBadImage(imageUrl)) {
+        imageUrl = await extractArticleImage(item.link);
       }
 
-      // 2️⃣ Fallback: scrape article page (REAL FIX)
-      if (!imageUrl && item.link) {
-        imageUrl = await extractABPArticleImage(item.link);
+      // FULL ARTICLE TEXT
+      let fullText = await extractFullArticle(item.link);
+
+      if (fullText.length < 150) {
+        fullText =
+          item["content:encoded"] ||
+          item.description ||
+          "";
       }
+
+      const cleanDescription = cleanText(
+        fullText,
+        350
+      );
 
       await News.updateOne(
         { externalId: item.link },
         {
+          $set: {
+            description: cleanDescription,
+            imageUrl:
+              imageUrl ||
+              "https://via.placeholder.com/300x200?text=News",
+          },
           $setOnInsert: {
             title: item.title,
-            description: item.description,
             link: item.link,
             category,
             language: "te",
             source: "ABP Telugu",
             externalId: item.link,
             publishedAt: new Date(item.pubDate),
-            imageUrl: imageUrl || null,
           },
         },
         { upsert: true }
       );
 
       count++;
-    } catch (err) {
-      console.log("Skip article:", item.link);
+
+    } catch {
+      console.log("⚠ Skip:", item.link);
     }
   }
 
-  console.log(`ABP Telugu ${category} saved:`, count);
+  console.log(`📰 ABP ${category} saved:`, count);
   return count;
 }
 

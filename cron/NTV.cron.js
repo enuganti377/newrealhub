@@ -5,7 +5,7 @@ const { fetchNTV} = require("../services/NTV");
 
 console.log("NTV RSS cron started");
 
-cron.schedule("*/10 * * * *", async () => {
+cron.schedule("*/15 * * * *", async () => {
   try {
     const categories = ["general", "politics", "sports", "cinema"];
 

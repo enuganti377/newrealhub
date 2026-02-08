@@ -6,7 +6,7 @@ let isRunning = false;
 console.log(" English RSS cron started");
 
 
-cron.schedule("*/10 * * * *", async () => {
+cron.schedule("*/1 * * * *", async () => {
   if (isRunning) {
     console.log(" English Cron skipped (already running)");
     return;

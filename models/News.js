@@ -12,7 +12,9 @@ const newsSchema = new mongoose.Schema(
   language: { type: String, enum: ["en", "te"] },
   source: String,
   publishedAt: Date,
-  externalId: { type: String }
+  externalId: { type: String,
+     unique: true 
+   }
   }
 );
 

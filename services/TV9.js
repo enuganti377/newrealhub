@@ -33,17 +33,17 @@ async function fetchTV9(category) {
 
       let imageUrl = null;
 
-      // 1️⃣ media:content
+     
       if (item["media:content"]?.$?.url) {
         imageUrl = item["media:content"].$.url;
       }
 
-      // 2️⃣ enclosure
+    
       else if (item.enclosure?.$?.url) {
         imageUrl = item.enclosure.$.url;
       }
 
-      // 3️⃣ content:encoded (MOST IMPORTANT)
+      
       else if (item["content:encoded"]) {
         const match = item["content:encoded"].match(
           /<img[^>]+src="([^">]+)"/
@@ -51,7 +51,6 @@ async function fetchTV9(category) {
         if (match) imageUrl = match[1];
       }
 
-      // 4️⃣ description fallback
       else if (item.description) {
         const match = item.description.match(
           /<img[^>]+src="([^">]+)"/
