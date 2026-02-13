@@ -178,7 +178,7 @@ async function fetchTeluguNews(category) {
             link: item.link,
             category,
             language: "te",
-            source: "ABP Telugu",
+            source: "ABN Telugu",
             externalId: item.link,
             publishedAt: new Date(item.pubDate),
           },
