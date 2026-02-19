@@ -10,175 +10,89 @@ const rssMap = {
   cinema: "https://telugu.abplive.com/entertainment/feed",
 };
 
+// ✅ Clean HTML safely (ONLY from RSS description)
+function cleanDescription(html = "", maxWords = 60) {
+  const $ = cheerio.load(html);
 
+  // Remove image tags from description
+  $("img").remove();
 
-
-function decodeHtml(text = "") {
-  return text
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&")
-    .replace(/&nbsp;/g, " ");
-}
-
-
-
-
-function cleanText(html = "", maxWords = 250) {
-  let text = decodeHtml(html);
-
-  text = text.replace(/<[^>]*>/g, " ");
-  text = text.replace(/\s+/g, " ").trim();
-
+  const text = $.text().replace(/\s+/g, " ").trim();
   const words = text.split(" ");
+
   if (words.length > maxWords) {
-    text = words.slice(0, maxWords).join(" ");
+    return words.slice(0, maxWords).join(" ") + "...";
   }
 
   return text;
 }
 
-
-
-
-async function extractFullArticle(url) {
-  try {
-    const { data } = await axios.get(url, {
-      timeout: 12000,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-      },
-    });
-
-    const $ = cheerio.load(data);
-
-    let text = "";
-
-  
-    const selectors = [
-      ".article-content p",
-      ".story-content p",
-      ".abp-story-article p",
-      "article p",
-      ".content p",
-      ".storyBody p",
-    ];
-
-    for (const sel of selectors) {
-      $(sel).each((i, el) => {
-        const t = $(el).text().trim();
-        if (t.length > 40) {
-          text += t + " ";
-        }
-      });
-
-      if (text.length > 250) break;
-    }
-
-    return text.trim();
-
-  } catch {
-    return "";
+// ✅ Extract image ONLY from RSS data
+function extractImage(item) {
+  // 1️⃣ enclosure tag
+  if (item.enclosure?.$?.url) {
+    return item.enclosure.$.url;
   }
-}
 
-
-
-
-function isBadImage(url) {
-  if (!url) return true;
-  const bad = ["logo", "icon", "sprite", "default"];
-  return bad.some((w) => url.toLowerCase().includes(w));
-}
-
-
-
-
-async function extractArticleImage(url) {
-  try {
-    const { data } = await axios.get(url);
-    const $ = cheerio.load(data);
-
-    const og = $('meta[property="og:image"]').attr("content");
-    if (og && !isBadImage(og)) return og;
-
-    return null;
-
-  } catch {
-    return null;
+  // 2️⃣ media:content
+  if (item["media:content"]?.$?.url) {
+    return item["media:content"].$.url;
   }
+
+  // 3️⃣ image inside description HTML
+  if (item.description) {
+    const $ = cheerio.load(item.description);
+    const img = $("img").attr("src");
+    if (img) return img;
+  }
+
+  return "https://via.placeholder.com/300x200?text=News";
 }
-
-
-
 
 async function fetchTeluguNews(category) {
   const rssUrl = rssMap[category];
   if (!rssUrl) return 0;
 
-  console.log(" Fetching ABN:", category);
+  try {
+    const response = await axios.get(rssUrl);
 
-  const response = await axios.get(rssUrl);
-  const parser = new xml2js.Parser({
-    explicitArray: false,
-    tagNameProcessors: [xml2js.processors.stripPrefix],
-  });
+    const parser = new xml2js.Parser({
+      explicitArray: false,
+      tagNameProcessors: [xml2js.processors.stripPrefix],
+    });
 
-  const data = await parser.parseStringPromise(response.data);
+    const data = await parser.parseStringPromise(response.data);
+    const items = data?.rss?.channel?.item || [];
 
-  const items = data?.rss?.channel?.item || [];
-  const list = Array.isArray(items)
-    ? items.slice(0, 10)
-    : [items];
+    const list = Array.isArray(items)
+      ? items.slice(0, 10)
+      : [items];
 
-  let count = 0;
+    let count = 0;
 
-  for (const item of list) {
-    try {
+    for (const item of list) {
       if (!item.link) continue;
 
-      
-      let imageUrl =
-        item.enclosure?.$?.url ||
-        item["media:content"]?.$?.url;
+      const imageUrl = extractImage(item);
 
-      if (!imageUrl || isBadImage(imageUrl)) {
-        imageUrl = await extractArticleImage(item.link);
-      }
-
-    
-      let fullText = await extractFullArticle(item.link);
-
-      if (fullText.length < 150) {
-        fullText =
-          item["content:encoded"] ||
-          item.description ||
-          "";
-      }
-
-      const cleanDescription = cleanText(
-        fullText,
-        350
+      const shortDescription = cleanDescription(
+        item.description || "",
+        60 // only preview
       );
 
       await News.updateOne(
         { externalId: item.link },
         {
           $set: {
-            description: cleanDescription,
-            imageUrl:
-              imageUrl ||
-              "https://via.placeholder.com/300x200?text=News",
+            description: shortDescription,
+            imageUrl,
           },
           $setOnInsert: {
             title: item.title,
-            link: item.link,
+            link: item.link, // redirect to original site
             category,
             language: "te",
-            source: "ABN Telugu",
+            source: "ABP Telugu",
             externalId: item.link,
             publishedAt: new Date(item.pubDate),
           },
@@ -187,14 +101,15 @@ async function fetchTeluguNews(category) {
       );
 
       count++;
-
-    } catch {
-      console.log(" Skip:", item.link);
     }
-  }
 
-  console.log(` ABN ${category} saved:`, count);
-  return count;
+    console.log(`Saved ${count} ${category} news`);
+    return count;
+
+  } catch (err) {
+    console.log("Error fetching RSS:", err.message);
+    return 0;
+  }
 }
 
 module.exports = { fetchTeluguNews };
