@@ -6,7 +6,7 @@ const News = require("../models/News");
 
 
 // Clean text
-function cleanText(text = "", maxWords = 400) {
+function cleanText(text = "", maxWords = 250) {
   text = text.replace(/<[^>]*>/g, " ");
   text = text.replace(/\s+/g, " ").trim();
 
@@ -128,7 +128,7 @@ async function fetchEnglishNews() {
           fullText = item.description || "";
         }
 
-        const cleanDescription = cleanText(fullText, 400);
+        const cleanDescription = cleanText(fullText, 250);
 
         const result = await News.updateOne(
           { externalId: item.link },
