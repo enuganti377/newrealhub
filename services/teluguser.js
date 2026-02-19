@@ -10,43 +10,65 @@ const rssMap = {
   cinema: "https://telugu.abplive.com/entertainment/feed",
 };
 
-// ✅ Clean HTML safely (ONLY from RSS description)
+const DEFAULT_IMAGE =
+  "https://via.placeholder.com/300x200?text=News";
+
+// ✅ Clean description safely (RSS only)
 function cleanDescription(html = "", maxWords = 60) {
   const $ = cheerio.load(html);
-
-  // Remove image tags from description
   $("img").remove();
 
   const text = $.text().replace(/\s+/g, " ").trim();
   const words = text.split(" ");
 
-  if (words.length > maxWords) {
-    return words.slice(0, maxWords).join(" ") + "...";
-  }
-
-  return text;
+  return words.length > maxWords
+    ? words.slice(0, maxWords).join(" ") + "..."
+    : text;
 }
 
-// ✅ Extract image ONLY from RSS data
+// ✅ Strong RSS Image Extractor (NO webpage scraping)
 function extractImage(item) {
-  // 1️⃣ enclosure tag
-  if (item.enclosure?.$?.url) {
-    return item.enclosure.$.url;
+
+  // 1️⃣ media:content (after stripPrefix)
+  if (item.content?.$?.url) {
+    return item.content.$.url;
   }
 
-  // 2️⃣ media:content
   if (item["media:content"]?.$?.url) {
     return item["media:content"].$.url;
   }
 
-  // 3️⃣ image inside description HTML
-  if (item.description) {
-    const $ = cheerio.load(item.description);
-    const img = $("img").attr("src");
-    if (img) return img;
+  // 2️⃣ media:thumbnail
+  if (item.thumbnail?.$?.url) {
+    return item.thumbnail.$.url;
   }
 
-  return "https://via.placeholder.com/300x200?text=News";
+  if (item["media:thumbnail"]?.$?.url) {
+    return item["media:thumbnail"].$.url;
+  }
+
+  // 3️⃣ enclosure
+  if (item.enclosure?.$?.url) {
+    return item.enclosure.$.url;
+  }
+
+  // 4️⃣ content:encoded image
+  if (item.encoded) {
+    const match = item.encoded.match(
+      /<img[^>]+src=['"]([^'"]+)['"]/i
+    );
+    if (match) return match[1];
+  }
+
+  // 5️⃣ description image
+  if (item.description) {
+    const match = item.description.match(
+      /<img[^>]+src=['"]([^'"]+)['"]/i
+    );
+    if (match) return match[1];
+  }
+
+  return DEFAULT_IMAGE;
 }
 
 async function fetchTeluguNews(category) {
@@ -74,10 +96,9 @@ async function fetchTeluguNews(category) {
       if (!item.link) continue;
 
       const imageUrl = extractImage(item);
-
       const shortDescription = cleanDescription(
         item.description || "",
-        60 // only preview
+        60
       );
 
       await News.updateOne(
@@ -89,7 +110,7 @@ async function fetchTeluguNews(category) {
           },
           $setOnInsert: {
             title: item.title,
-            link: item.link, // redirect to original site
+            link: item.link, // redirect only
             category,
             language: "te",
             source: "ABP Telugu",
@@ -107,9 +128,10 @@ async function fetchTeluguNews(category) {
     return count;
 
   } catch (err) {
-    console.log("Error fetching RSS:", err.message);
+    console.log("RSS Error:", err.message);
     return 0;
   }
 }
 
 module.exports = { fetchTeluguNews };
+
