@@ -1,7 +1,7 @@
 const cron = require("node-cron");
 const { fetchTeluguNews } = require("../services/teluguser");
 
-c
+
 
 console.log("Telugu RSS cron started");
 
