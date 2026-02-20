@@ -59,7 +59,7 @@ function extractImage(item) {
    Fetch Single Category
 ========================= */
 async function fetchCategory(category, url) {
-  console.log(`📡 Fetching ABP Telugu: ${category}`);
+  console.log(` Fetching ABP Telugu: ${category}`);
 
   try {
     const response = await axios.get(url, {
@@ -135,7 +135,7 @@ async function fetchCategory(category, url) {
 /* =========================
    Fetch ALL Categories
 ========================= */
-async function fetchAllTeluguNews() {
+async function fetchTeluguNews() {
   let total = 0;
 
   for (const [category, url] of Object.entries(rssMap)) {
@@ -147,4 +147,4 @@ async function fetchAllTeluguNews() {
   return total;
 }
 
-module.exports = { fetchAllTeluguNews };
+module.exports = {fetchTeluguNews };
