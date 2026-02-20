@@ -26,10 +26,8 @@ function cleanDescription(html = "", maxWords = 60) {
     : text;
 }
 
-// ✅ Strong RSS Image Extractor (NO webpage scraping)
+// ✅ SAME IMAGE LOGIC (UNCHANGED)
 function extractImage(item) {
-
-  // 1️⃣ media:content (after stripPrefix)
   if (item.content?.$?.url) {
     return item.content.$.url;
   }
@@ -38,7 +36,6 @@ function extractImage(item) {
     return item["media:content"].$.url;
   }
 
-  // 2️⃣ media:thumbnail
   if (item.thumbnail?.$?.url) {
     return item.thumbnail.$.url;
   }
@@ -47,12 +44,10 @@ function extractImage(item) {
     return item["media:thumbnail"].$.url;
   }
 
-  // 3️⃣ enclosure
   if (item.enclosure?.$?.url) {
     return item.enclosure.$.url;
   }
 
-  // 4️⃣ content:encoded image
   if (item.encoded) {
     const match = item.encoded.match(
       /<img[^>]+src=['"]([^'"]+)['"]/i
@@ -60,7 +55,6 @@ function extractImage(item) {
     if (match) return match[1];
   }
 
-  // 5️⃣ description image
   if (item.description) {
     const match = item.description.match(
       /<img[^>]+src=['"]([^'"]+)['"]/i
@@ -75,8 +69,15 @@ async function fetchTeluguNews(category) {
   const rssUrl = rssMap[category];
   if (!rssUrl) return 0;
 
+  console.log("📡 Fetching ABP Telugu:", category);
+
   try {
-    const response = await axios.get(rssUrl);
+    const response = await axios.get(rssUrl, {
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+      },
+      timeout: 10000,
+    });
 
     const parser = new xml2js.Parser({
       explicitArray: false,
@@ -84,51 +85,70 @@ async function fetchTeluguNews(category) {
     });
 
     const data = await parser.parseStringPromise(response.data);
-    const items = data?.rss?.channel?.item || [];
 
-    const list = Array.isArray(items)
-      ? items.slice(0, 10)
-      : [items];
+    let items = data?.rss?.channel?.item || [];
+
+    // 🔥 FIX: Ensure always array
+    if (!Array.isArray(items)) {
+      items = [items];
+    }
+
+    console.log(`📰 ABP ${category} total from RSS:`, items.length);
+
+    items = items.slice(0, 10);
 
     let count = 0;
 
-    for (const item of list) {
-      if (!item.link) continue;
+    for (const item of items) {
+      try {
+        if (!item?.link) continue;
 
-      const imageUrl = extractImage(item);
-      const shortDescription = cleanDescription(
-        item.description || "",
-        60
-      );
+        const imageUrl = extractImage(item);
+        const shortDescription = cleanDescription(
+          item.description || "",
+          60
+        );
 
-      await News.updateOne(
-        { externalId: item.link },
-        {
-          $set: {
-            description: shortDescription,
-            imageUrl,
-          },
-          $setOnInsert: {
-            title: item.title,
-            link: item.link, // redirect only
-            category,
-            language: "te",
-            source: "ABP Telugu",
+        const result = await News.updateOne(
+          {
             externalId: item.link,
-            publishedAt: new Date(item.pubDate),
+            source: "ABP Telugu",
           },
-        },
-        { upsert: true }
-      );
+          {
+            $set: {
+              description: shortDescription,
+              imageUrl,
+            },
+            $setOnInsert: {
+              title: item.title || "No Title",
+              link: item.link,
+              category,
+              language: "te",
+              source: "ABP Telugu",
+              externalId: item.link,
+              publishedAt: item.pubDate
+                ? new Date(item.pubDate)
+                : new Date(),
+            },
+          },
+          { upsert: true }
+        );
 
-      count++;
+        // 🔥 Only count if actually inserted
+        if (result.upsertedCount > 0) {
+          count++;
+        }
+
+      } catch (itemErr) {
+        console.error(" ABP item error:", itemErr.message);
+      }
     }
 
-    console.log(`Saved ${count} ${category} news`);
+    console.log(` ABP ${category} newly inserted: ${count}`);
     return count;
 
   } catch (err) {
-    console.log("RSS Error:", err.message);
+    console.log(" ABP RSS Error:", err.message);
     return 0;
   }
 }
