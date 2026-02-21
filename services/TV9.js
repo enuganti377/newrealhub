@@ -2,43 +2,95 @@ const axios = require("axios");
 const xml2js = require("xml2js");
 const News = require("../models/News");
 
-const rssMap = {
-  general: "https://tv9telugu.com/feed",
-  politics: "https://tv9telugu.com/politics/feed",
-  sports: "https://tv9telugu.com/sports/feed",
-  cinema: "https://tv9telugu.com/entertainment/feed",
-};
+const DEFAULT_IMAGE =
+  "https://via.placeholder.com/300x200?text=News";
+
+
+function detectCategory(title = "", description = "") {
+  const text = (title + " " + description).toLowerCase();
+
+
+  if (
+    text.includes("cm") ||
+    text.includes("mla") ||
+    text.includes("minister") ||
+    text.includes("election") ||
+    text.includes("మంత్రి") ||
+    text.includes("ఎన్నిక") ||
+    text.includes("ప్రభుత్వం")
+  ) {
+    return "politics";
+  }
+
+
+  if (
+    text.includes("cricket") ||
+    text.includes("ipl") ||
+    text.includes("match") ||
+    text.includes("football") ||
+    text.includes("క్రికెట్")
+  ) {
+    return "sports";
+  }
+
+
+  if (
+    text.includes("movie") ||
+    text.includes("review") ||
+    text.includes("cinema") ||
+    text.includes("సినిమా") ||
+    text.includes("హీరో") ||
+    text.includes("actress")
+  ) {
+    return "cinema";
+  }
+
+  return "general";
+}
+
+
+const rssFeeds = [
+  {
+    url: "https://tv9telugu.com/politics/feed",
+    defaultCategory: "politics",
+  },
+  {
+    url: "https://tv9telugu.com/sports/feed",
+    defaultCategory: "sports",
+  },
+  {
+    url: "https://tv9telugu.com/entertainment/feed",
+    defaultCategory: "cinema",
+  },
+  {
+    url: "https://tv9telugu.com/feed",
+    defaultCategory: "general",
+  },
+];
+
 
 function extractImage(item) {
-  let imageUrl = null;
+  if (item["media:content"]?.$?.url)
+    return item["media:content"].$.url;
 
-  // media:content
-  if (item["media:content"]?.$?.url) {
-    imageUrl = item["media:content"].$.url;
-  }
+  if (item.enclosure?.$?.url)
+    return item.enclosure.$.url;
 
-  // enclosure
-  else if (item.enclosure?.$?.url) {
-    imageUrl = item.enclosure.$.url;
-  }
-
-  // content:encoded
-  else if (item["content:encoded"]) {
+  if (item["content:encoded"]) {
     const match = item["content:encoded"].match(
       /<img[^>]+src="([^">]+)"/
     );
-    if (match) imageUrl = match[1];
+    if (match) return match[1];
   }
 
-  // description
-  else if (item.description) {
+  if (item.description) {
     const match = item.description.match(
       /<img[^>]+src="([^">]+)"/
     );
-    if (match) imageUrl = match[1];
+    if (match) return match[1];
   }
 
-  return imageUrl;
+  return DEFAULT_IMAGE;
 }
 
 function cleanDescription(description = "") {
@@ -48,71 +100,75 @@ function cleanDescription(description = "") {
     .trim();
 }
 
-async function fetchTV9(category) {
-  const rssurl = rssMap[category];
-  if (!rssurl) return 0;
 
-  console.log("📡 Fetching TV9:", category);
+async function fetchTV9() {
+  console.log("📡 Fetching TV9 (Hybrid Mode)");
+
+  let totalInserted = 0;
 
   try {
-    const response = await axios.get(rssurl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-      },
-      timeout: 10000,
-    });
+    for (const feed of rssFeeds) {
+      const response = await axios.get(feed.url, {
+        headers: { "User-Agent": "Mozilla/5.0" },
+        timeout: 10000,
+      });
 
-    const parser = new xml2js.Parser({ explicitArray: false });
-    const data = await parser.parseStringPromise(response.data);
+      const parser = new xml2js.Parser({ explicitArray: false });
+      const data = await parser.parseStringPromise(response.data);
 
-    let items = data?.rss?.channel?.item || [];
+      let items = data?.rss?.channel?.item || [];
+      if (!Array.isArray(items)) items = [items];
 
-    
-    if (!Array.isArray(items)) {
-      items = [items];
-    }
-
-    console.log(` TV9 ${category} total from RSS:`, items.length);
-
-    items = items.slice(0, 10); // Take latest 10
-
-    let count = 0;
-
-    for (const item of items) {
-      try {
+      for (const item of items.slice(0, 20)) {
         if (!item?.link) continue;
 
-        const exists = await News.findOne({
-          externalId: item.link,
-          source: "TV9 Telugu",
-        });
+        const description = cleanDescription(item.description || "");
 
-        if (exists) continue;
+      
+        const detected = detectCategory(
+          item.title || "",
+          description
+        );
 
-        const imageUrl = extractImage(item);
+        const finalCategory =
+          detected !== "general"
+            ? detected
+            : feed.defaultCategory;
 
-        await News.create({
-          title: item.title || "No Title",
-          description: cleanDescription(item.description || ""),
-          imageUrl,
-          link: item.link,
-          category,
-          language: "te",
-          source: "TV9 Telugu",
-          externalId: item.link,
-          publishedAt: item.pubDate
-            ? new Date(item.pubDate)
-            : new Date(),
-        });
+        const result = await News.updateOne(
+          {
+            externalId: item.link,
+            source: "TV9 Telugu",
+          },
+          {
+            $set: {
+              title: item.title || "No Title",
+              description,
+              imageUrl: extractImage(item),
+              link: item.link,
+              language: "te",
+              source: "TV9 Telugu",
+              publishedAt: item.pubDate
+                ? new Date(item.pubDate)
+                : new Date(),
+            },
+            $setOnInsert: {
+              externalId: item.link,
+              category: finalCategory,
+            },
+          },
+          { upsert: true }
+        );
 
-        count++;
-      } catch (err) {
-        console.error("❌ TV9 Item Error:", err.message);
+        if (result.upsertedCount > 0) {
+          totalInserted++;
+        }
       }
     }
 
-    console.log(` TV9 ${category} saved:`, count);
-    return count;
+    console.log(" TV9 Inserted:", totalInserted);
+    return totalInserted;
+
   } catch (error) {
     console.error(" TV9 RSS ERROR:", error.message);
     return 0;
