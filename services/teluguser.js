@@ -3,19 +3,53 @@ const xml2js = require("xml2js");
 const cheerio = require("cheerio");
 const News = require("../models/News");
 
-const rssMap = {
-  general: "https://telugu.abplive.com/home/feed",
-  politics: "https://telugu.abplive.com/politics/feed",
-  sports: "https://telugu.abplive.com/sports/feed",
-  cinema: "https://telugu.abplive.com/entertainment/feed",
-};
-
 const DEFAULT_IMAGE =
   "https://via.placeholder.com/300x200?text=News";
 
-/* =========================
-   Clean Description
-========================= */
+
+function detectCategory(title = "", description = "") {
+  const text = (title + " " + description).toLowerCase();
+
+  
+  if (
+    text.includes("cm") ||
+    text.includes("mla") ||
+    text.includes("minister") ||
+    text.includes("election") ||
+    text.includes("మంత్రి") ||
+    text.includes("ఎన్నిక") ||
+    text.includes("ప్రభుత్వం")
+  ) {
+    return "politics";
+  }
+
+  
+  if (
+    text.includes("cricket") ||
+    text.includes("ipl") ||
+    text.includes("match") ||
+    text.includes("football") ||
+    text.includes("క్రికెట్")
+  ) {
+    return "sports";
+  }
+
+  
+  if (
+    text.includes("movie") ||
+    text.includes("review") ||
+    text.includes("cinema") ||
+    text.includes("సినిమా") ||
+    text.includes("హీరో") ||
+    text.includes("actress")
+  ) {
+    return "cinema";
+  }
+
+  return "general";
+}
+
+
 function cleanDescription(html = "", maxWords = 60) {
   const $ = cheerio.load(html);
   $("img").remove();
@@ -28,22 +62,13 @@ function cleanDescription(html = "", maxWords = 60) {
     : text;
 }
 
-/* =========================
-   Extract Image
-========================= */
+
 function extractImage(item) {
   if (item?.content?.$?.url) return item.content.$.url;
   if (item?.["media:content"]?.$?.url) return item["media:content"].$.url;
   if (item?.thumbnail?.$?.url) return item.thumbnail.$.url;
   if (item?.["media:thumbnail"]?.$?.url) return item["media:thumbnail"].$.url;
   if (item?.enclosure?.$?.url) return item.enclosure.$.url;
-
-  if (item?.encoded) {
-    const match = item.encoded.match(
-      /<img[^>]+src=['"]([^'"]+)['"]/i
-    );
-    if (match) return match[1];
-  }
 
   if (item?.description) {
     const match = item.description.match(
@@ -55,96 +80,109 @@ function extractImage(item) {
   return DEFAULT_IMAGE;
 }
 
-/* =========================
-   Fetch Single Category
-========================= */
-async function fetchCategory(category, url) {
-  console.log(` Fetching ABP Telugu: ${category}`);
+
+const rssFeeds = [
+  {
+    url: "https://telugu.abplive.com/politics/feed",
+    defaultCategory: "politics",
+  },
+  {
+    url: "https://telugu.abplive.com/sports/feed",
+    defaultCategory: "sports",
+  },
+  {
+    url: "https://telugu.abplive.com/entertainment/feed",
+    defaultCategory: "cinema",
+  },
+  {
+    url: "https://telugu.abplive.com/home/feed",
+    defaultCategory: "general",
+  },
+];
+
+
+async function fetchTeluguNews() {
+  console.log("📡 Fetching ABP Telugu (Smart Categorization)");
+
+  let totalInserted = 0;
 
   try {
-    const response = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0" },
-      timeout: 10000,
-    });
+    for (const feed of rssFeeds) {
+      const response = await axios.get(feed.url, {
+        headers: { "User-Agent": "Mozilla/5.0" },
+        timeout: 10000,
+      });
 
-    const parser = new xml2js.Parser({
-      explicitArray: false,
-      tagNameProcessors: [xml2js.processors.stripPrefix],
-    });
+      const parser = new xml2js.Parser({
+        explicitArray: false,
+        tagNameProcessors: [xml2js.processors.stripPrefix],
+      });
 
-    const data = await parser.parseStringPromise(response.data);
+      const data = await parser.parseStringPromise(response.data);
+      let items = data?.rss?.channel?.item || [];
 
-    let items = data?.rss?.channel?.item || [];
+      if (!Array.isArray(items)) items = [items];
 
-    if (!Array.isArray(items)) {
-      items = [items];
-    }
+      for (const item of items.slice(0, 20)) {
+        if (!item?.link) continue;
 
-    items = items.slice(0, 15);
+        const shortDescription = cleanDescription(
+          item.description || "",
+          60
+        );
 
-    let inserted = 0;
+        const imageUrl = extractImage(item);
 
-    for (const item of items) {
-      if (!item?.link) continue;
+        // Smart category detection
+        const detectedCategory = detectCategory(
+          item.title || "",
+          shortDescription
+        );
 
-      const imageUrl = extractImage(item);
-      const shortDescription = cleanDescription(
-        item.description || "",
-        60
-      );
+        
+        const finalCategory =
+          detectedCategory !== "general"
+            ? detectedCategory
+            : feed.defaultCategory;
 
-      const result = await News.updateOne(
-        {
-          externalId: item.link,
-          source: "ABP Telugu",
-        },
-        {
-          $set: {
-            title: item.title || "No Title",
-            description: shortDescription,
-            imageUrl,
-            link: item.link,
-            category,
-            language: "te",
-            source: "ABP Telugu",
-            publishedAt: item.pubDate
-              ? new Date(item.pubDate)
-              : new Date(),
-          },
-          $setOnInsert: {
+        const result = await News.updateOne(
+          {
             externalId: item.link,
+            source: "ABP Telugu",
           },
-        },
-        { upsert: true }
-      );
+          {
+            $set: {
+              title: item.title || "No Title",
+              description: shortDescription,
+              imageUrl,
+              link: item.link,
+              language: "te",
+              source: "ABP Telugu",
+              publishedAt: item.pubDate
+                ? new Date(item.pubDate)
+                : new Date(),
+            },
+            $setOnInsert: {
+              externalId: item.link,
+              category: finalCategory,
+            },
+          },
+          { upsert: true }
+        );
 
-      if (result.upsertedCount > 0) {
-        inserted++;
+        if (result.upsertedCount > 0) {
+          totalInserted++;
+        }
       }
     }
 
-    console.log(` ${category} inserted: ${inserted}`);
-    return inserted;
+    console.log(" Total ABP Telugu Inserted:", totalInserted);
+    return totalInserted;
 
   } catch (err) {
-    console.error(`${category} RSS Error:`, err.message);
+    console.error(" ABP Telugu RSS Error:", err.message);
     return 0;
   }
 }
 
-/* =========================
-   Fetch ALL Categories
-========================= */
-async function fetchTeluguNews() {
-  let total = 0;
-
-  for (const [category, url] of Object.entries(rssMap)) {
-    const count = await fetchCategory(category, url);
-    total += count;
-  }
-
-  console.log(" Total ABP Telugu inserted:", total);
-  return total;
-}
-
-module.exports = {fetchTeluguNews };
+module.exports = { fetchTeluguNews };
