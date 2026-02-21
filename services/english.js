@@ -5,9 +5,7 @@ const News = require("../models/News");
 const DEFAULT_IMAGE =
   "https://via.placeholder.com/300x200?text=News";
 
-/* =========================
-   Clean Description
-========================= */
+
 function cleanText(text = "", maxWords = 60) {
   text = text.replace(/<[^>]*>/g, " ");
   text = text.replace(/\s+/g, " ").trim();
@@ -18,33 +16,17 @@ function cleanText(text = "", maxWords = 60) {
     : text;
 }
 
-/* =========================
-   Extract Image from BBC RSS
-========================= */
+
 function getBBCImage(item) {
-  if (item?.thumbnail?.$?.url) {
-    return item.thumbnail.$.url;
-  }
-
-  if (item?.content?.$?.url) {
-    return item.content.$.url;
-  }
-
-  if (item?.enclosure?.$?.url) {
-    return item.enclosure.$.url;
-  }
+  if (item?.thumbnail?.$?.url) return item.thumbnail.$.url;
+  if (item?.content?.$?.url) return item.content.$.url;
+  if (item?.enclosure?.$?.url) return item.enclosure.$.url;
 
   return DEFAULT_IMAGE;
 }
 
-/* =========================
-   BBC Feeds (All Categories)
-========================= */
+
 const feeds = [
-  {
-    url: "https://feeds.bbci.co.uk/news/rss.xml",
-    category: "general",
-  },
   {
     url: "https://feeds.bbci.co.uk/news/politics/rss.xml",
     category: "political",
@@ -57,15 +39,17 @@ const feeds = [
     url: "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml",
     category: "cinema",
   },
+  {
+    url: "https://feeds.bbci.co.uk/news/rss.xml",
+    category: "general",
+  },
 ];
 
-/* =========================
-   Main Fetch Function
-========================= */
-async function fetchEnglishNews() {
-  console.log("📡 Fetching BBC News (All Categories)");
 
-  let totalSaved = 0;
+async function fetchEnglishNews() {
+  console.log(" Fetching BBC News (Priority Category Order)");
+
+  let totalInserted = 0;
 
   try {
     for (const feed of feeds) {
@@ -79,7 +63,9 @@ async function fetchEnglishNews() {
       });
 
       const data = await parser.parseStringPromise(response.data);
-      const items = data?.rss?.channel?.item || [];
+      let items = data?.rss?.channel?.item || [];
+
+      if (!Array.isArray(items)) items = [items];
 
       for (const item of items.slice(0, 15)) {
         if (!item.link) continue;
@@ -87,34 +73,37 @@ async function fetchEnglishNews() {
         const imageUrl = getBBCImage(item);
         const description = cleanText(item.description || "", 60);
 
-        await News.updateOne(
-          { externalId: item.link }, // Prevent duplicates
+        const result = await News.updateOne(
+          { externalId: item.link },
           {
+            // Always update content fields
             $set: {
               title: item.title,
               description,
               imageUrl,
               link: item.link,
-              category: feed.category, 
               language: "en",
               source: "BBC",
-              publishedAt: new Date(
-                item.pubDate || Date.now()
-              ),
+              publishedAt: new Date(item.pubDate || Date.now()),
             },
+
+          
             $setOnInsert: {
               externalId: item.link,
+              category: feed.category,
             },
           },
           { upsert: true }
         );
 
-        totalSaved++;
+        if (result.upsertedCount > 0) {
+          totalInserted++;
+        }
       }
     }
 
-    console.log(` BBC Total Saved: ${totalSaved}`);
-    return totalSaved;
+    console.log(`BBC Newly Inserted: ${totalInserted}`);
+    return totalInserted;
 
   } catch (error) {
     console.error(" BBC RSS ERROR:", error.message);
