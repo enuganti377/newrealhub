@@ -2,12 +2,65 @@ const axios = require("axios");
 const xml2js = require("xml2js");
 const News = require("../models/News");
 
-const rssMap = {
-  general: "https://ntvtelugu.com/feed",
-  politics: "https://ntvtelugu.com/category/politics/feed",
-  sports: "https://ntvtelugu.com/category/sports/feed",
-  cinema: "https://ntvtelugu.com/category/entertainment/feed",
-};
+const DEFAULT_IMAGE =
+  "https://via.placeholder.com/300x200?text=News";
+
+
+function detectCategory(title = "", description = "") {
+  const text = (title + " " + description).toLowerCase();
+
+  if (
+    text.includes("cm") ||
+    text.includes("mla") ||
+    text.includes("minister") ||
+    text.includes("election") ||
+    text.includes("మంత్రి") ||
+    text.includes("ఎన్నిక")
+  ) {
+    return "politics";
+  }
+
+  if (
+    text.includes("cricket") ||
+    text.includes("ipl") ||
+    text.includes("match") ||
+    text.includes("క్రికెట్")
+  ) {
+    return "sports";
+  }
+
+  if (
+    text.includes("movie") ||
+    text.includes("review") ||
+    text.includes("cinema") ||
+    text.includes("సినిమా") ||
+    text.includes("హీరో")
+  ) {
+    return "cinema";
+  }
+
+  return "general";
+}
+
+
+const rssFeeds = [
+  {
+    url: "https://ntvtelugu.com/category/politics/feed",
+    defaultCategory: "politics",
+  },
+  {
+    url: "https://ntvtelugu.com/category/sports/feed",
+    defaultCategory: "sports",
+  },
+  {
+    url: "https://ntvtelugu.com/category/entertainment/feed",
+    defaultCategory: "cinema",
+  },
+  {
+    url: "https://ntvtelugu.com/feed",
+    defaultCategory: "general",
+  },
+];
 
 function extractImageFromHTML(html) {
   if (!html) return null;
@@ -25,91 +78,84 @@ function cleanDescription(description = "") {
     .trim();
 }
 
-async function fetchNTV(category) {
-  const rssurl = rssMap[category];
-  if (!rssurl) return 0;
 
-  console.log("📡 Fetching NTV:", category);
+async function fetchNTV() {
+  console.log(" Fetching NTV (Hybrid Mode)");
+
+  let totalInserted = 0;
 
   try {
-    const response = await axios.get(rssurl, {
-      headers: {
-        "User-Agent": "Mozilla/5.0",
-      },
-      timeout: 10000,
-    });
+    for (const feed of rssFeeds) {
+      const response = await axios.get(feed.url, {
+        headers: { "User-Agent": "Mozilla/5.0" },
+        timeout: 10000,
+      });
 
-    const parser = new xml2js.Parser({ explicitArray: false });
-    const data = await parser.parseStringPromise(response.data);
+      const parser = new xml2js.Parser({
+        explicitArray: false,
+      });
 
-    let items = data?.rss?.channel?.item || [];
+      const data = await parser.parseStringPromise(response.data);
+      let items = data?.rss?.channel?.item || [];
 
-    // 🔥 FIX: Always ensure array
-    if (!Array.isArray(items)) {
-      items = [items];
-    }
+      if (!Array.isArray(items)) items = [items];
 
-    console.log(` NTV ${category} total from RSS:`, items.length);
-
-    items = items.slice(0, 10);
-
-    let count = 0;
-
-    for (const item of items) {
-      try {
+      for (const item of items.slice(0, 20)) {
         if (!item?.link) continue;
 
-        // 🔥 Better duplicate check (include source)
-        const exists = await News.findOne({
-          externalId: item.link,
-          source: "NTV Telugu",
-        });
+        const description = cleanDescription(item.description || "");
 
-        if (exists) continue;
+        const detected = detectCategory(
+          item.title || "",
+          description
+        );
 
-        let imageUrl = null;
+        const finalCategory =
+          detected !== "general"
+            ? detected
+            : feed.defaultCategory;
 
-        // Try description first
-        imageUrl = extractImageFromHTML(item.description);
+        let imageUrl =
+          extractImageFromHTML(item.description) ||
+          extractImageFromHTML(item["content:encoded"]) ||
+          item["media:content"]?.$?.url ||
+          item.enclosure?.$?.url ||
+          DEFAULT_IMAGE;
 
-        // Try content:encoded
-        if (!imageUrl && item["content:encoded"]) {
-          imageUrl = extractImageFromHTML(item["content:encoded"]);
+        const result = await News.updateOne(
+          {
+            externalId: item.link,
+            source: "NTV Telugu",
+          },
+          {
+            $set: {
+              title: item.title || "No Title",
+              description,
+              imageUrl,
+              link: item.link,
+              language: "te",
+              source: "NTV Telugu",
+              publishedAt: item.pubDate
+                ? new Date(item.pubDate)
+                : new Date(),
+            },
+            $setOnInsert: {
+              externalId: item.link,
+              category: finalCategory,
+            },
+          },
+          { upsert: true }
+        );
+
+        if (result.upsertedCount > 0) {
+          totalInserted++;
         }
-
-        // Try media:content
-        if (!imageUrl && item["media:content"]?.$?.url) {
-          imageUrl = item["media:content"].$.url;
-        }
-
-        // Try enclosure
-        if (!imageUrl && item.enclosure?.$?.url) {
-          imageUrl = item.enclosure.$.url;
-        }
-
-        await News.create({
-          title: item.title || "No Title",
-          description: cleanDescription(item.description || ""),
-          imageUrl:
-            imageUrl || "https://yourcdn.com/default-news.jpg",
-          link: item.link,
-          category,
-          language: "te",
-          source: "NTV Telugu",
-          externalId: item.link,
-          publishedAt: item.pubDate
-            ? new Date(item.pubDate)
-            : new Date(),
-        });
-
-        count++;
-      } catch (itemErr) {
-        console.error(" NTV item error:", itemErr.message);
       }
     }
 
-    console.log(` NTV ${category} saved: ${count}`);
-    return count;
+    console.log(" NTV Inserted:", totalInserted);
+    return totalInserted;
+
   } catch (error) {
     console.error(" NTV RSS ERROR:", error.message);
     return 0;
